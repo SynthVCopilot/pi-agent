@@ -258,6 +258,15 @@ impl AgentProvider for AnthropicProvider {
     }
 }
 
+/// pi-audio 组件配置：指向组件 venv 的 python 与 pi_audio.py 脚本。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioToolConfig {
+    /// 组件 venv 的 python 可执行文件（Python ≤3.11）。
+    pub python: String,
+    /// components/pi-audio/pi_audio.py 的绝对路径。
+    pub script: String,
+}
+
 /// pi-agent 顶层配置（%LOCALAPPDATA%\PiAgent\config.json 或经 FFI 传入的 JSON）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PiConfig {
@@ -269,6 +278,9 @@ pub struct PiConfig {
     /// synthv-agent-bridge 仓库根（含 dist/src/cli.js），供桥连接使用。
     #[serde(default)]
     pub bridge_repo_dir: Option<String>,
+    /// pi-audio 组件（配置后 agent 获得 audio_probe / audio_pair_diff 工具）。
+    #[serde(default)]
+    pub audio: Option<AudioToolConfig>,
 }
 
 fn default_provider() -> String {

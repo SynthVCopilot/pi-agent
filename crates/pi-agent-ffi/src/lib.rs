@@ -16,12 +16,14 @@ use pi_agent_core::{
     ToolDefinition, ToolExecutor, ToolResult,
 };
 use pi_agent_mcp::SynthVBridge;
-use pi_agent_provider::PiConfig;
+use pi_agent_provider::{AudioToolConfig, PiConfig};
 
 /// 不透明 agent 句柄。
 pub struct PiAgent {
     provider: Box<dyn AgentProvider>,
     conversation: Vec<ChatMessage>,
+    /// pi-audio 组件配置（有则为 agent 增加 audio_* 工具）。
+    audio: Option<AudioToolConfig>,
 }
 
 /// 不透明桥句柄：自带 tokio 运行时，同步阻塞地驱动异步 MCP 客户端。
@@ -62,6 +64,7 @@ pub extern "C" fn pi_agent_create() -> *mut PiAgent {
     Box::into_raw(Box::new(PiAgent {
         provider: Box::new(EchoProvider),
         conversation: Vec::new(),
+        audio: None,
     }))
 }
 
@@ -82,7 +85,11 @@ pub unsafe extern "C" fn pi_agent_create_json(config_json_utf8: *const c_char) -
     let Ok(provider) = config.build_provider() else {
         return ptr::null_mut();
     };
-    Box::into_raw(Box::new(PiAgent { provider, conversation: Vec::new() }))
+    Box::into_raw(Box::new(PiAgent {
+        provider,
+        conversation: Vec::new(),
+        audio: config.audio.clone(),
+    }))
 }
 
 /// 校验配置 JSON，返回 `{"ok":true,"provider":"…"}` 或 `{"error":"…"}`。
@@ -278,7 +285,148 @@ impl ToolExecutor for BridgeTools<'_> {
     }
 }
 
-/// 跑一轮对话，且把 SynthV 桥的六工具提供给模型（bridge 可为 NULL＝无工具）。
+/// pi-audio 组件工具：audio_probe / audio_pair_diff，spawn 组件 venv 的 python 执行。
+struct AudioTools<'a> {
+    cfg: &'a AudioToolConfig,
+}
+
+impl AudioTools<'_> {
+    fn run_cli(&self, cli_args: &[String]) -> Result<String, PiError> {
+        let output = std::process::Command::new(&self.cfg.python)
+            .arg(&self.cfg.script)
+            .args(cli_args)
+            .output()
+            .map_err(|e| PiError::new(format!("启动 pi-audio 失败: {e}")))?;
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if stdout.is_empty() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let tail: String = stderr.chars().rev().take(400).collect::<String>()
+                .chars().rev().collect();
+            return Err(PiError::new(format!("pi-audio 无输出，stderr 尾部: {tail}")));
+        }
+        Ok(stdout)
+    }
+}
+
+impl ToolExecutor for AudioTools<'_> {
+    fn tools(&self) -> Vec<ToolDefinition> {
+        vec![
+            ToolDefinition {
+                name: "audio_probe".into(),
+                description: "音频探针：特征指纹(BPM/调/打击比/能量弧)；panns=true 加乐器构成、\
+                              genre 倾向与有词/无词判别；notes=true 加音符统计(慢)。返回紧凑 JSON，\
+                              风格命名由你(模型)结合事实完成。"
+                    .into(),
+                input_schema_json: r#"{"type":"object","properties":{"audio":{"type":"string","description":"音频文件绝对路径"},"panns":{"type":"boolean"},"notes":{"type":"boolean"}},"required":["audio"]}"#.into(),
+            },
+            ToolDefinition {
+                name: "audio_pair_diff".into(),
+                description: "有词/无词配对差分：提取人声贡献音符并单音化；midi 给出路径则导出单音\
+                              人声轨（≤512 音符时可直接经 sv_command import_monophonic_score 进 SynthV）。"
+                    .into(),
+                input_schema_json: r#"{"type":"object","properties":{"vocal":{"type":"string","description":"有词版绝对路径"},"inst":{"type":"string","description":"无词版绝对路径"},"midi":{"type":"string","description":"可选：导出 MIDI 的绝对路径"}},"required":["vocal","inst"]}"#.into(),
+            },
+        ]
+    }
+
+    fn execute(&self, call: &ToolCall) -> Result<ToolResult, PiError> {
+        let args: serde_json::Value =
+            serde_json::from_str(&call.arguments_json).unwrap_or(serde_json::json!({}));
+        let get = |k: &str| args.get(k).and_then(|v| v.as_str()).map(str::to_string);
+        let cli: Vec<String> = match call.tool_name.as_str() {
+            "audio_probe" => {
+                let Some(audio) = get("audio") else {
+                    return Ok(ToolResult {
+                        tool_call_id: call.id.clone(),
+                        result_json: "{\"error\":\"缺少 audio 参数\"}".into(),
+                        is_error: true,
+                    });
+                };
+                let mut v = vec!["probe".to_string(), audio];
+                if args.get("panns").and_then(|b| b.as_bool()).unwrap_or(false) {
+                    v.push("--panns".into());
+                }
+                if args.get("notes").and_then(|b| b.as_bool()).unwrap_or(false) {
+                    v.push("--notes".into());
+                }
+                v
+            }
+            "audio_pair_diff" => {
+                let (Some(vocal), Some(inst)) = (get("vocal"), get("inst")) else {
+                    return Ok(ToolResult {
+                        tool_call_id: call.id.clone(),
+                        result_json: "{\"error\":\"缺少 vocal/inst 参数\"}".into(),
+                        is_error: true,
+                    });
+                };
+                let mut v = vec!["pair-diff".to_string(), vocal, inst];
+                if let Some(midi) = get("midi") {
+                    // 模型可控参数：只取文件名主干、强制 .mid、圈定在专用输出目录，
+                    // 防提示注入导致的任意路径覆盖写。
+                    let stem = std::path::Path::new(&midi)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("vocal-mono")
+                        .to_string();
+                    let out_dir = std::env::var_os("LOCALAPPDATA")
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|| std::path::PathBuf::from("."))
+                        .join("PiAgent")
+                        .join("output");
+                    let _ = std::fs::create_dir_all(&out_dir);
+                    let safe = out_dir.join(format!("{stem}.mid"));
+                    v.push("--midi".into());
+                    v.push(safe.to_string_lossy().into_owned());
+                }
+                v
+            }
+            other => {
+                return Ok(ToolResult {
+                    tool_call_id: call.id.clone(),
+                    result_json: format!("{{\"error\":\"未知音频工具 {other}\"}}"),
+                    is_error: true,
+                })
+            }
+        };
+        match self.run_cli(&cli) {
+            Ok(json) => Ok(ToolResult {
+                tool_call_id: call.id.clone(),
+                result_json: json.clone(),
+                is_error: json.contains("\"error\""),
+            }),
+            Err(e) => Ok(ToolResult {
+                tool_call_id: call.id.clone(),
+                result_json: format!("{{\"error\":\"{e}\"}}"),
+                is_error: true,
+            }),
+        }
+    }
+}
+
+/// 组合执行器：按工具名路由到桥工具或音频工具。
+struct CompositeTools<'a> {
+    parts: Vec<&'a dyn ToolExecutor>,
+}
+
+impl ToolExecutor for CompositeTools<'_> {
+    fn tools(&self) -> Vec<ToolDefinition> {
+        self.parts.iter().flat_map(|p| p.tools()).collect()
+    }
+    fn execute(&self, call: &ToolCall) -> Result<ToolResult, PiError> {
+        for p in &self.parts {
+            if p.tools().iter().any(|t| t.name == call.tool_name) {
+                return p.execute(call);
+            }
+        }
+        Ok(ToolResult {
+            tool_call_id: call.id.clone(),
+            result_json: format!("{{\"error\":\"没有名为 {} 的工具\"}}", call.tool_name),
+            is_error: true,
+        })
+    }
+}
+
+/// 跑一轮对话；工具面 = SynthV 桥六工具(bridge 非 NULL 时) + pi-audio 工具(配置了 audio 时)。
 /// 返回本轮新增消息 JSON 数组；出错返回 `{"error":…}`。调用方需 `pi_string_free`。
 ///
 /// # Safety
@@ -296,13 +444,24 @@ pub unsafe extern "C" fn pi_agent_send_with_bridge(
         return err_json("入参不是合法 UTF-8");
     };
 
-    let mut run = |executor: &dyn ToolExecutor| {
-        let loop_ = AgentLoop::new(agent.provider.as_ref(), executor);
-        loop_.run_turn(&mut agent.conversation, input)
-    };
-    let result = match bridge_handle.as_ref() {
-        Some(bridge) => run(&BridgeTools { bridge }),
-        None => run(&NoTools),
+    let bridge_tools = bridge_handle.as_ref().map(|bridge| BridgeTools { bridge });
+    let audio_cfg = agent.audio.clone();
+    let audio_tools = audio_cfg.as_ref().map(|cfg| AudioTools { cfg });
+    let mut parts: Vec<&dyn ToolExecutor> = Vec::new();
+    if let Some(b) = bridge_tools.as_ref() {
+        parts.push(b);
+    }
+    if let Some(a) = audio_tools.as_ref() {
+        parts.push(a);
+    }
+
+    let result = if parts.is_empty() {
+        AgentLoop::new(agent.provider.as_ref(), &NoTools)
+            .run_turn(&mut agent.conversation, input)
+    } else {
+        let composite = CompositeTools { parts };
+        AgentLoop::new(agent.provider.as_ref(), &composite)
+            .run_turn(&mut agent.conversation, input)
     };
     match result {
         Ok(added) => match serde_json::to_string(&added) {

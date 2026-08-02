@@ -20,6 +20,8 @@ pub enum ComponentKind {
     TempoBeatDetection,
     /// Sound→(含词)MIDI：音频(+词时间轴)转成带音节歌词的 MIDI；也支持直接导入。
     SoundToMidi,
+    /// pi-audio 音频探针：特征指纹 + PANNs 判别(乐器/genre倾向/有词无词) + 配对差分。
+    AudioProbe,
 }
 
 /// 谁能用这个组件：AI agent、人工（桌面 UI 直接点），或两者。
@@ -122,5 +124,9 @@ pub fn default_catalog() -> Vec<ComponentSpec> {
              "检测 BPM、beat、downbeat（拍数），供对齐与量化。", Audience::Both),
         spec("sound-to-midi", ComponentKind::SoundToMidi, "Sound→MIDI（含词）",
              "音频(+词时间轴)转带音节歌词 MIDI；也支持直接导入 MIDI/MusicXML。", Audience::Both),
+        spec("pi-audio", ComponentKind::AudioProbe, "pi-audio 音频探针",
+             "本仓库 components/pi-audio：probe(特征指纹+PANNs 乐器/genre倾向/有词无词判别) 与 \
+              pair-diff(有词/无词配对差分→单音人声轨，可直喂 SV import)。风格命名留给上层 LLM。",
+             Audience::Both),
     ]
 }

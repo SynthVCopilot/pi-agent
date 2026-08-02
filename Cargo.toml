@@ -1,0 +1,30 @@
+# Pi Agent — v3 深度自定义 agent（Rust）。
+# 版本谱系：v1 = codex skill（synthv-agent-bridge + SKILLS/synthv-agent，已存在）；
+# v2 = 魔改 codex agent（不归本项目管）；v3 = pi，本仓库，直连并深度自定义。
+#
+# 产物：pi-agent-ffi 编成 C-ABI 原生 DLL，供 WinUI3 桌面壳 (pi-desktop) 用 P/Invoke
+# 进程内直调 —— 真正的「原生内部通信」。
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/pi-agent-core",
+    "crates/pi-agent-mcp",
+    "crates/pi-agent-ffi",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["WuYilingwei"]
+repository = "https://github.com/SynthVCopilot/pi-agent"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util", "sync", "macros"] }
+
+[profile.release]
+lto = true
+codegen-units = 1

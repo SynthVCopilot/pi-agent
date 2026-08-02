@@ -1,9 +1,6 @@
-# .NET
-bin/
-obj/
-*.user
-.vs/
+# Rust
+/target/
+**/*.rs.bk
 
-# Local component installs / runtime data
-/artifacts/
+# Local runtime data / component installs
 *.log

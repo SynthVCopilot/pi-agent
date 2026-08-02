@@ -1,0 +1,17 @@
+[package]
+name = "pi-agent-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Pi Agent v3：C-ABI 原生库，供 WinUI3 桌面壳 P/Invoke 进程内直调"
+
+[lib]
+name = "pi_agent"
+# 产物：pi_agent.dll（Windows）。WinUI3 用 DllImport("pi_agent") 直接调用。
+crate-type = ["cdylib"]
+
+[dependencies]
+pi-agent-core = { path = "../pi-agent-core" }
+serde_json.workspace = true

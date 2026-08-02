@@ -1,0 +1,12 @@
+[package]
+name = "pi-agent-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Pi Agent v3 核心：与后端无关的 agent 循环、会话历史、组件模型"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

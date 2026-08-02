@@ -197,6 +197,19 @@ impl AnthropicProvider {
             }
         }
         let text = text_parts.join("");
+        // 推理型模型可能把预算全烧在不可见 thinking 上：给出诊断而非静默空回复。
+        if text.is_empty() && tool_calls.is_empty() {
+            let stop = value
+                .get("stop_reason")
+                .and_then(|s| s.as_str())
+                .unwrap_or("unknown");
+            return Ok(AgentStep {
+                assistant_text: Some(format!(
+                    "（模型没有产生可见文本，stop_reason={stop}；若为 max_tokens，请在配置里调大 max_tokens——推理型模型的思考也计入预算）"
+                )),
+                tool_calls,
+            });
+        }
         Ok(AgentStep {
             assistant_text: if text.is_empty() { None } else { Some(text) },
             tool_calls,

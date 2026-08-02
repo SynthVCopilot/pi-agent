@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Pi Agent 核心库（深度自定义 agent）。
+    刻意保持零第三方 NuGet 依赖：MCP stdio 客户端、JSON-RPC、会话与组件调度
+    全部用 BCL 自实现，保证在任何装了 .NET 10 SDK 的机器上都能干净 restore/build，
+    并且能作为 git submodule 被 WinUI 3 桌面壳（pi-desktop）以进程内(in-proc)方式直接引用。
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>PiAgent.Core</RootNamespace>
+    <AssemblyName>PiAgent.Core</AssemblyName>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+</Project>

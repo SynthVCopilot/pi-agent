@@ -1,0 +1,9 @@
+# .NET
+bin/
+obj/
+*.user
+.vs/
+
+# Local component installs / runtime data
+/artifacts/
+*.log

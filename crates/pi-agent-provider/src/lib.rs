@@ -258,14 +258,17 @@ impl AgentProvider for AnthropicProvider {
     }
 }
 
-/// pi-audio 组件配置：指向组件 venv 的 python 与 pi_audio.py 脚本。
+/// Python 组件配置：指向组件 venv 的 python 与脚本。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AudioToolConfig {
+pub struct PythonToolConfig {
     /// 组件 venv 的 python 可执行文件（Python ≤3.11）。
     pub python: String,
-    /// components/pi-audio/pi_audio.py 的绝对路径。
+    /// 组件脚本（pi_audio.py / cvrs.py）的绝对路径。
     pub script: String,
 }
+
+/// 兼容别名。
+pub type AudioToolConfig = PythonToolConfig;
 
 /// pi-agent 顶层配置（%LOCALAPPDATA%\PiAgent\config.json 或经 FFI 传入的 JSON）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -280,7 +283,10 @@ pub struct PiConfig {
     pub bridge_repo_dir: Option<String>,
     /// pi-audio 组件（配置后 agent 获得 audio_probe / audio_pair_diff 工具）。
     #[serde(default)]
-    pub audio: Option<AudioToolConfig>,
+    pub audio: Option<PythonToolConfig>,
+    /// cvrs 组件（配置后 agent 获得 cvrs_probe / cvrs_add_ref 工具）。
+    #[serde(default)]
+    pub cvrs: Option<PythonToolConfig>,
 }
 
 fn default_provider() -> String {

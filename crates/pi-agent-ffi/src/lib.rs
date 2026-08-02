@@ -16,14 +16,16 @@ use pi_agent_core::{
     ToolDefinition, ToolExecutor, ToolResult,
 };
 use pi_agent_mcp::SynthVBridge;
-use pi_agent_provider::{AudioToolConfig, PiConfig};
+use pi_agent_provider::{PiConfig, PythonToolConfig};
 
 /// 不透明 agent 句柄。
 pub struct PiAgent {
     provider: Box<dyn AgentProvider>,
     conversation: Vec<ChatMessage>,
     /// pi-audio 组件配置（有则为 agent 增加 audio_* 工具）。
-    audio: Option<AudioToolConfig>,
+    audio: Option<PythonToolConfig>,
+    /// cvrs 组件配置（有则为 agent 增加 cvrs_* 工具）。
+    cvrs: Option<PythonToolConfig>,
 }
 
 /// 不透明桥句柄：自带 tokio 运行时，同步阻塞地驱动异步 MCP 客户端。
@@ -65,6 +67,7 @@ pub extern "C" fn pi_agent_create() -> *mut PiAgent {
         provider: Box::new(EchoProvider),
         conversation: Vec::new(),
         audio: None,
+        cvrs: None,
     }))
 }
 
@@ -89,6 +92,7 @@ pub unsafe extern "C" fn pi_agent_create_json(config_json_utf8: *const c_char) -
         provider,
         conversation: Vec::new(),
         audio: config.audio.clone(),
+        cvrs: config.cvrs.clone(),
     }))
 }
 
@@ -285,26 +289,44 @@ impl ToolExecutor for BridgeTools<'_> {
     }
 }
 
-/// pi-audio 组件工具：audio_probe / audio_pair_diff，spawn 组件 venv 的 python 执行。
+/// spawn 一个 Python 组件脚本（venv python + script + args），返回 stdout（纯 JSON 契约）。
+fn run_python_tool(cfg: &PythonToolConfig, label: &str, cli_args: &[String]) -> Result<String, PiError> {
+    let output = std::process::Command::new(&cfg.python)
+        .arg(&cfg.script)
+        .args(cli_args)
+        .output()
+        .map_err(|e| PiError::new(format!("启动 {label} 失败: {e}")))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let tail: String = stderr.chars().rev().take(400).collect::<String>()
+            .chars().rev().collect();
+        return Err(PiError::new(format!("{label} 无输出，stderr 尾部: {tail}")));
+    }
+    Ok(stdout)
+}
+
+fn ok_result(call: &ToolCall, json: String) -> ToolResult {
+    let is_error = json.contains("\"error\"");
+    ToolResult { tool_call_id: call.id.clone(), result_json: json, is_error }
+}
+
+fn err_result(call: &ToolCall, msg: String) -> ToolResult {
+    ToolResult {
+        tool_call_id: call.id.clone(),
+        result_json: format!("{{\"error\":{}}}", serde_json::Value::String(msg)),
+        is_error: true,
+    }
+}
+
+/// pi-audio 组件工具：audio_probe / audio_pair_diff。
 struct AudioTools<'a> {
-    cfg: &'a AudioToolConfig,
+    cfg: &'a PythonToolConfig,
 }
 
 impl AudioTools<'_> {
     fn run_cli(&self, cli_args: &[String]) -> Result<String, PiError> {
-        let output = std::process::Command::new(&self.cfg.python)
-            .arg(&self.cfg.script)
-            .args(cli_args)
-            .output()
-            .map_err(|e| PiError::new(format!("启动 pi-audio 失败: {e}")))?;
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if stdout.is_empty() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let tail: String = stderr.chars().rev().take(400).collect::<String>()
-                .chars().rev().collect();
-            return Err(PiError::new(format!("pi-audio 无输出，stderr 尾部: {tail}")));
-        }
-        Ok(stdout)
+        run_python_tool(self.cfg, "pi-audio", cli_args)
     }
 }
 
@@ -409,6 +431,72 @@ impl ToolExecutor for AudioTools<'_> {
     }
 }
 
+/// CVRS 组件工具：cvrs_probe / cvrs_add_ref（.svp 文件级，只写不读）。
+struct CvrsTools<'a> {
+    cfg: &'a PythonToolConfig,
+}
+
+impl ToolExecutor for CvrsTools<'_> {
+    fn tools(&self) -> Vec<ToolDefinition> {
+        vec![
+            ToolDefinition {
+                name: "cvrs_probe".into(),
+                description: "只读探针一个 .svp：返回 format version、SV1/SV2 时代、轨列表\
+                              (名/音符数/是否 instrumental/是否静音/音频文件)与格式标记。不翻译唱法语义。"
+                    .into(),
+                input_schema_json: r#"{"type":"object","properties":{"svp":{"type":"string","description":".svp 文件绝对路径"}},"required":["svp"]}"#.into(),
+            },
+            ToolDefinition {
+                name: "cvrs_add_ref".into(),
+                description: "把一个 wav 作为静音参考音频轨写进目标 .svp（跨版本只写不读）。\
+                              schema 克隆自目标以保证兼容；源文件不改动，输出落 ~/.SynthVcopilot/output/。"
+                    .into(),
+                input_schema_json: r#"{"type":"object","properties":{"target":{"type":"string","description":"目标 .svp 绝对路径(写入方)"},"audio":{"type":"string","description":"参考 wav 路径"},"name":{"type":"string"},"begin_seconds":{"type":"number"},"out":{"type":"string","description":"输出文件名(落数据根 output/)"}},"required":["target","audio"]}"#.into(),
+            },
+        ]
+    }
+
+    fn execute(&self, call: &ToolCall) -> Result<ToolResult, PiError> {
+        let args: serde_json::Value =
+            serde_json::from_str(&call.arguments_json).unwrap_or(serde_json::json!({}));
+        let get = |k: &str| args.get(k).and_then(|v| v.as_str()).map(str::to_string);
+        let cli: Vec<String> = match call.tool_name.as_str() {
+            "cvrs_probe" => match get("svp") {
+                Some(svp) => vec!["probe".to_string(), svp],
+                None => return Ok(err_result(call, "缺少 svp 参数".into())),
+            },
+            "cvrs_add_ref" => {
+                let (Some(target), Some(audio)) = (get("target"), get("audio")) else {
+                    return Ok(err_result(call, "缺少 target/audio 参数".into()));
+                };
+                let mut v = vec!["add-ref".to_string(), target, "--audio".into(), audio];
+                if let Some(name) = get("name") {
+                    v.push("--name".into());
+                    v.push(name);
+                }
+                if let Some(begin) = args.get("begin_seconds").and_then(|b| b.as_f64()) {
+                    v.push("--begin-seconds".into());
+                    v.push(begin.to_string());
+                }
+                if let Some(out) = get("out") {
+                    // 输出名同样禁穿透（Python 侧还会再校验一次）
+                    if out.contains("..") {
+                        return Ok(err_result(call, format!("out 含 '..'，拒绝: {out}")));
+                    }
+                    v.push("--out".into());
+                    v.push(out);
+                }
+                v
+            }
+            other => return Ok(err_result(call, format!("未知 cvrs 工具 {other}"))),
+        };
+        match run_python_tool(self.cfg, "cvrs", &cli) {
+            Ok(json) => Ok(ok_result(call, json)),
+            Err(e) => Ok(err_result(call, e.to_string())),
+        }
+    }
+}
+
 /// 组合执行器：按工具名路由到桥工具或音频工具。
 struct CompositeTools<'a> {
     parts: Vec<&'a dyn ToolExecutor>,
@@ -453,12 +541,17 @@ pub unsafe extern "C" fn pi_agent_send_with_bridge(
     let bridge_tools = bridge_handle.as_ref().map(|bridge| BridgeTools { bridge });
     let audio_cfg = agent.audio.clone();
     let audio_tools = audio_cfg.as_ref().map(|cfg| AudioTools { cfg });
+    let cvrs_cfg = agent.cvrs.clone();
+    let cvrs_tools = cvrs_cfg.as_ref().map(|cfg| CvrsTools { cfg });
     let mut parts: Vec<&dyn ToolExecutor> = Vec::new();
     if let Some(b) = bridge_tools.as_ref() {
         parts.push(b);
     }
     if let Some(a) = audio_tools.as_ref() {
         parts.push(a);
+    }
+    if let Some(c) = cvrs_tools.as_ref() {
+        parts.push(c);
     }
 
     let result = if parts.is_empty() {

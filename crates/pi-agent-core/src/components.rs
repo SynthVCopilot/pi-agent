@@ -22,6 +22,8 @@ pub enum ComponentKind {
     SoundToMidi,
     /// pi-audio 音频探针：特征指纹 + PANNs 判别(乐器/genre倾向/有词无词) + 配对差分。
     AudioProbe,
+    /// CVRS 跨版本渲染搬运：.svp 文件级、只写不读，静音参考音频轨。
+    Cvrs,
 }
 
 /// 谁能用这个组件：AI agent、人工（桌面 UI 直接点），或两者。
@@ -127,6 +129,10 @@ pub fn default_catalog() -> Vec<ComponentSpec> {
         spec("pi-audio", ComponentKind::AudioProbe, "pi-audio 音频探针",
              "本仓库 components/pi-audio：probe(特征指纹+PANNs 乐器/genre倾向/有词无词判别) 与 \
               pair-diff(有词/无词配对差分→单音人声轨，可直喂 SV import)。风格命名留给上层 LLM。",
+             Audience::Both),
+        spec("cvrs", ComponentKind::Cvrs, "CVRS 跨版本渲染搬运",
+             "本仓库 components/cvrs：.svp 文件级、只写不读的 SV1↔SV2 桥。probe(版本/时代/轨探针) 与 \
+              add-ref(把 wav 写成静音参考音频轨，schema 克隆自目标以保证兼容)。渲染步不含，wav 由调用方给。",
              Audience::Both),
     ]
 }

@@ -50,11 +50,20 @@ venv\Scripts\pip install -r requirements.txt
 ```
 
 PANNs(可选):按 requirements.txt 注释装 torch(CPU)+panns-inference。
-首次 `probe --panns` 会经内置 urllib 下载 Cnn14 checkpoint(~300MB)与标签 CSV
-到 `~\panns_data\`(panns_inference 自带的 wget 下载在 Windows 上不可用,本工具已绕开)。
+首次 `probe --panns` 经内置 urllib 下载(库自带的 wget 下载在 Windows 上不可用,已绕开)。
 
-注意:`audio_pair_diff` 经 agent 调用时,MIDI 输出被强制圈定在
-`%LOCALAPPDATA%\PiAgent\output\`(防任意路径写);直接命令行使用无此限制。
+## 数据纪律(统一数据根)
+
+所有数据统一放 **`~/.SynthVcopilot/`**,并且**硬禁止 `..` 穿透**:
+
+| 内容 | 位置 |
+|---|---|
+| PANNs checkpoint (~300MB) | `~/.SynthVcopilot/models/panns/`(显式传 checkpoint_path) |
+| MIDI 等输出写入 | `~/.SynthVcopilot/output/`(`--midi` 只收相对名;绝对路径仅根内放行) |
+| 配置 / 历史(pi-agent 侧) | `~/.SynthVcopilot/config.json` / `history/` |
+
+唯一根外例外:AudioSet 标签 CSV(~60KB)——panns_inference 库在 import 时硬编码读
+`~/panns_data/class_labels_indices.csv`,无法重定向,已自动预置。
 
 ## 验证记录
 

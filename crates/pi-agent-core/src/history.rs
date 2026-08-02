@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -87,10 +87,7 @@ impl ConversationStore for JsonConversationStore {
     }
 }
 
-/// 便捷：本地默认历史目录（%LOCALAPPDATA%\PiAgent\history 或 ~/.local/share）。
+/// 便捷：统一数据根下的默认历史目录（~/.SynthVcopilot/history）。
 pub fn default_history_dir() -> PathBuf {
-    let base = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(".").to_path_buf());
-    base.join("PiAgent").join("history")
+    crate::paths::history_dir()
 }

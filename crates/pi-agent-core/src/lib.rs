@@ -7,6 +7,7 @@ pub mod agent;
 pub mod components;
 pub mod error;
 pub mod history;
+pub mod paths;
 
 pub use agent::{
     AgentLoop, AgentProvider, AgentStep, ChatMessage, EchoProvider, NoTools, Role, ToolCall,
@@ -18,3 +19,4 @@ pub use components::{
 };
 pub use error::{PiError, Result};
 pub use history::{Conversation, ConversationStore, JsonConversationStore};
+pub use paths::{config_path, data_root, history_dir, models_dir, output_dir, safe_join};

@@ -51,34 +51,77 @@ def note_name(p: int) -> str:
     return f"{NOTE_NAMES[p % 12]}{p // 12 - 1}"
 
 
-def _ensure_panns_assets():
-    """预置 PANNs 所需文件（Cnn14 checkpoint ~300MB + AudioSet 标签 CSV）。
+def data_root():
+    """统一数据根：~/.SynthVcopilot（模型/输出/配置/历史都在这个根下）。"""
+    import pathlib
 
-    panns_inference 自带的下载走 os.system('wget')，在无 wget 的 Windows 上
-    静默失败；这里用标准库 urllib 补齐，已存在则跳过。
+    return pathlib.Path.home() / ".SynthVcopilot"
+
+
+def safe_output_path(name_or_rel: str, subdir: str = "output", suffix: str | None = None):
+    """把（可能来自外部的）输出路径安全落到 ~/.SynthVcopilot/ 数据根下。
+
+    规则：硬禁止 `..` 穿透；相对路径落到 `<root>/<subdir>/` 下；
+    绝对路径仅当**已在数据根内**时放行（供 FFI 侧传入已圈定的路径），否则拒绝。
+    可选强制扩展名。
     """
+    import pathlib
+
+    root = data_root()
+    p = pathlib.PurePath(name_or_rel)
+    if any(part == ".." for part in p.parts):
+        raise ValueError(f"路径含 '..'，禁止穿透: {name_or_rel}")
+    if p.is_absolute():
+        resolved = pathlib.Path(name_or_rel).resolve()
+        try:
+            resolved.relative_to(root.resolve())
+        except ValueError:
+            raise ValueError(f"绝对路径不在数据根 {root} 内，拒绝: {name_or_rel}")
+        out = resolved
+    else:
+        out = root / subdir / p
+    out = pathlib.Path(out)
+    if suffix and out.suffix.lower() != suffix:
+        out = out.with_suffix(suffix)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def _download(dest, url):
     import os
     import urllib.request
 
-    panns_dir = os.path.join(os.path.expanduser("~"), "panns_data")
-    os.makedirs(panns_dir, exist_ok=True)
-    assets = [
-        (
-            os.path.join(panns_dir, "class_labels_indices.csv"),
-            "https://raw.githubusercontent.com/qiuqiangkong/audioset_tagging_cnn/master/metadata/class_labels_indices.csv",
-        ),
-        (
-            os.path.join(panns_dir, "Cnn14_mAP=0.431.pth"),
-            "https://zenodo.org/record/3987831/files/Cnn14_mAP%3D0.431.pth?download=1",
-        ),
-    ]
-    for dest, url in assets:
-        if os.path.exists(dest) and os.path.getsize(dest) > 0:
-            continue
-        print(f"downloading {os.path.basename(dest)} ...", file=sys.stderr)
-        tmp = dest + ".part"
-        urllib.request.urlretrieve(url, tmp)
-        os.replace(tmp, dest)
+    if os.path.exists(dest) and os.path.getsize(dest) > 0:
+        return
+    print(f"downloading {os.path.basename(dest)} ...", file=sys.stderr)
+    tmp = str(dest) + ".part"
+    urllib.request.urlretrieve(url, tmp)
+    os.replace(tmp, dest)
+
+
+PANNS_CKPT_URL = "https://zenodo.org/record/3987831/files/Cnn14_mAP%3D0.431.pth?download=1"
+PANNS_CSV_URL = "https://raw.githubusercontent.com/qiuqiangkong/audioset_tagging_cnn/master/metadata/class_labels_indices.csv"
+
+
+def _ensure_panns_assets():
+    """预置 PANNs 资产。checkpoint(~300MB) 放统一数据根 models/panns/ 下；
+    标签 CSV 因 panns_inference 库在 import 时硬编码读 ~/panns_data/，只能放在
+    该处（唯一的根外例外，~60KB，已在 README 说明）。
+    下载用标准库 urllib（库自带的 wget 在 Windows 上不可用）。
+
+    返回 checkpoint 绝对路径（显式传给 AudioTagging，避免库把大模型下到根外）。
+    """
+    import os
+
+    models = data_root() / "models" / "panns"
+    models.mkdir(parents=True, exist_ok=True)
+    ckpt = models / "Cnn14_mAP=0.431.pth"
+    _download(ckpt, PANNS_CKPT_URL)
+
+    legacy = os.path.join(os.path.expanduser("~"), "panns_data")
+    os.makedirs(legacy, exist_ok=True)
+    _download(os.path.join(legacy, "class_labels_indices.csv"), PANNS_CSV_URL)
+    return str(ckpt)
 
 
 def extract_notes(path: str):
@@ -164,14 +207,15 @@ def cmd_probe(args) -> dict:
 
         # panns_inference 的 import/构造会向 stdout 打印（Checkpoint path/Using CPU），
         # 且首次下载走 os.system('wget')（Windows 无 wget 会静默失败）——
-        # 先用 urllib 预置资产，再整体改道 stderr 保证本工具 stdout 纯 JSON。
-        _ensure_panns_assets()
+        # 先用 urllib 预置资产（checkpoint 落统一数据根），再整体改道 stderr
+        # 保证本工具 stdout 纯 JSON。
+        ckpt_path = _ensure_panns_assets()
         with contextlib.redirect_stdout(sys.stderr):
             from panns_inference import AudioTagging
             from panns_inference.config import labels
 
             y32, _ = librosa.load(args.audio, sr=32000, mono=True)
-            at = AudioTagging(checkpoint_path=None, device="cpu")
+            at = AudioTagging(checkpoint_path=ckpt_path, device="cpu")
             clipwise, _ = at.inference(y32[None, :])
         probs = clipwise[0]
         order = np.argsort(probs)[::-1]
@@ -275,6 +319,8 @@ def cmd_pair_diff(args) -> dict:
     if args.midi:
         import pretty_midi
 
+        # 统一写入纪律：MIDI 只落 ~/.SynthVcopilot/output/ 下，禁止 .. 穿透与绝对路径。
+        out_path = safe_output_path(args.midi, subdir="output", suffix=".mid")
         pm = pretty_midi.PrettyMIDI()
         instr = pretty_midi.Instrument(program=54, name="vocal-mono")
         for n in mono:
@@ -287,8 +333,8 @@ def cmd_pair_diff(args) -> dict:
                 )
             )
         pm.instruments.append(instr)
-        pm.write(args.midi)
-        result["midi_out"] = args.midi
+        pm.write(str(out_path))
+        result["midi_out"] = str(out_path)
 
     return result
 

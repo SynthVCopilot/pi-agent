@@ -361,22 +361,28 @@ impl ToolExecutor for AudioTools<'_> {
                 };
                 let mut v = vec!["pair-diff".to_string(), vocal, inst];
                 if let Some(midi) = get("midi") {
-                    // 模型可控参数：只取文件名主干、强制 .mid、圈定在专用输出目录，
-                    // 防提示注入导致的任意路径覆盖写。
+                    // 模型可控参数：只取文件名主干、强制 .mid、经 safe_join 圈定在
+                    // ~/.SynthVcopilot/output 下（统一数据根 + 禁止 .. 穿透）。
                     let stem = std::path::Path::new(&midi)
                         .file_stem()
                         .and_then(|s| s.to_str())
                         .unwrap_or("vocal-mono")
                         .to_string();
-                    let out_dir = std::env::var_os("LOCALAPPDATA")
-                        .map(std::path::PathBuf::from)
-                        .unwrap_or_else(|| std::path::PathBuf::from("."))
-                        .join("PiAgent")
-                        .join("output");
+                    let out_dir = pi_agent_core::output_dir();
                     let _ = std::fs::create_dir_all(&out_dir);
-                    let safe = out_dir.join(format!("{stem}.mid"));
-                    v.push("--midi".into());
-                    v.push(safe.to_string_lossy().into_owned());
+                    match pi_agent_core::safe_join(&out_dir, &format!("{stem}.mid")) {
+                        Ok(safe) => {
+                            v.push("--midi".into());
+                            v.push(safe.to_string_lossy().into_owned());
+                        }
+                        Err(e) => {
+                            return Ok(ToolResult {
+                                tool_call_id: call.id.clone(),
+                                result_json: format!("{{\"error\":\"midi 路径被拒绝: {e}\"}}"),
+                                is_error: true,
+                            })
+                        }
+                    }
                 }
                 v
             }

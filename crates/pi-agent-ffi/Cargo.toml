@@ -14,4 +14,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pi-agent-core = { path = "../pi-agent-core" }
+pi-agent-mcp = { path = "../pi-agent-mcp" }
+pi-agent-provider = { path = "../pi-agent-provider" }
 serde_json.workspace = true
+tokio.workspace = true

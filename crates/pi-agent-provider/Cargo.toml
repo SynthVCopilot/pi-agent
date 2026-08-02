@@ -1,0 +1,14 @@
+[package]
+name = "pi-agent-provider"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Pi Agent v3：直连 Anthropic Messages API（含兼容中继）的原生 provider"
+
+[dependencies]
+pi-agent-core = { path = "../pi-agent-core" }
+serde.workspace = true
+serde_json.workspace = true
+ureq.workspace = true

@@ -18,6 +18,9 @@ use pi_agent_core::{
 use pi_agent_mcp::SynthVBridge;
 use pi_agent_provider::{PiConfig, PythonToolConfig};
 
+mod component_ffi;
+use component_ffi::FfmpegTools;
+
 /// 不透明 agent 句柄。
 pub struct PiAgent {
     provider: Box<dyn AgentProvider>,
@@ -34,20 +37,18 @@ pub struct PiBridge {
     bridge: SynthVBridge,
 }
 
-fn to_cstring(s: String) -> *mut c_char {
+pub(crate) fn to_cstring(s: String) -> *mut c_char {
     match CString::new(s) {
         Ok(c) => c.into_raw(),
         Err(_) => ptr::null_mut(),
     }
 }
 
-fn err_json(msg: &str) -> *mut c_char {
-    to_cstring(
-        serde_json::json!({ "error": msg }).to_string(),
-    )
+pub(crate) fn err_json(msg: &str) -> *mut c_char {
+    to_cstring(serde_json::json!({ "error": msg }).to_string())
 }
 
-unsafe fn cstr_to_str<'a>(p: *const c_char) -> Option<&'a str> {
+pub(crate) unsafe fn cstr_to_str<'a>(p: *const c_char) -> Option<&'a str> {
     if p.is_null() {
         return None;
     }
@@ -88,6 +89,7 @@ pub unsafe extern "C" fn pi_agent_create_json(config_json_utf8: *const c_char) -
     let Ok(provider) = config.build_provider() else {
         return ptr::null_mut();
     };
+    component_ffi::configure_ffmpeg(config.ffmpeg.clone());
     Box::into_raw(Box::new(PiAgent {
         provider,
         conversation: Vec::new(),
@@ -107,9 +109,7 @@ pub unsafe extern "C" fn pi_config_check(config_json_utf8: *const c_char) -> *mu
     };
     match PiConfig::from_json(text) {
         Ok(config) => match config.build_provider() {
-            Ok(p) => to_cstring(
-                serde_json::json!({ "ok": true, "provider": p.id() }).to_string(),
-            ),
+            Ok(p) => to_cstring(serde_json::json!({ "ok": true, "provider": p.id() }).to_string()),
             Err(e) => err_json(&e.to_string()),
         },
         Err(e) => err_json(&e.to_string()),
@@ -236,11 +236,26 @@ impl ToolExecutor for BridgeTools<'_> {
         const OPEN_SCHEMA: &str = r#"{"type":"object","additionalProperties":true}"#;
         [
             ("sv_status", "读取 SynthV 桥连接、Session、能力状态。无参。"),
-            ("sv_describe", "列出动作或返回单个 Query/Command/UI/Review 动作的紧凑 schema。"),
-            ("sv_query", "只读投影；contextMode:\"writeIntent\" 才能为后续写铸出 Context。"),
-            ("sv_command", "校验过的 edit/delete/clone/import/批处理写入。"),
-            ("sv_ui", "选区、视口、剪贴板、对话框、吸附、坐标、播放控制。"),
-            ("sv_review", "发布/查看侧栏预览，用户在 SynthV 内 Apply/Dismiss。"),
+            (
+                "sv_describe",
+                "列出动作或返回单个 Query/Command/UI/Review 动作的紧凑 schema。",
+            ),
+            (
+                "sv_query",
+                "只读投影；contextMode:\"writeIntent\" 才能为后续写铸出 Context。",
+            ),
+            (
+                "sv_command",
+                "校验过的 edit/delete/clone/import/批处理写入。",
+            ),
+            (
+                "sv_ui",
+                "选区、视口、剪贴板、对话框、吸附、坐标、播放控制。",
+            ),
+            (
+                "sv_review",
+                "发布/查看侧栏预览，用户在 SynthV 内 Apply/Dismiss。",
+            ),
         ]
         .into_iter()
         .map(|(name, desc)| ToolDefinition {
@@ -278,7 +293,11 @@ impl ToolExecutor for BridgeTools<'_> {
                     .get("isError")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                Ok(ToolResult { tool_call_id: call.id.clone(), result_json: text, is_error })
+                Ok(ToolResult {
+                    tool_call_id: call.id.clone(),
+                    result_json: text,
+                    is_error,
+                })
             }
             Err(e) => Ok(ToolResult {
                 tool_call_id: call.id.clone(),
@@ -290,7 +309,11 @@ impl ToolExecutor for BridgeTools<'_> {
 }
 
 /// spawn 一个 Python 组件脚本（venv python + script + args），返回 stdout（纯 JSON 契约）。
-fn run_python_tool(cfg: &PythonToolConfig, label: &str, cli_args: &[String]) -> Result<String, PiError> {
+fn run_python_tool(
+    cfg: &PythonToolConfig,
+    label: &str,
+    cli_args: &[String],
+) -> Result<String, PiError> {
     let output = std::process::Command::new(&cfg.python)
         .arg(&cfg.script)
         .args(cli_args)
@@ -299,8 +322,14 @@ fn run_python_tool(cfg: &PythonToolConfig, label: &str, cli_args: &[String]) -> 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if stdout.is_empty() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let tail: String = stderr.chars().rev().take(400).collect::<String>()
-            .chars().rev().collect();
+        let tail: String = stderr
+            .chars()
+            .rev()
+            .take(400)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
         return Err(PiError::new(format!("{label} 无输出，stderr 尾部: {tail}")));
     }
     Ok(stdout)
@@ -308,7 +337,11 @@ fn run_python_tool(cfg: &PythonToolConfig, label: &str, cli_args: &[String]) -> 
 
 fn ok_result(call: &ToolCall, json: String) -> ToolResult {
     let is_error = json.contains("\"error\"");
-    ToolResult { tool_call_id: call.id.clone(), result_json: json, is_error }
+    ToolResult {
+        tool_call_id: call.id.clone(),
+        result_json: json,
+        is_error,
+    }
 }
 
 fn err_result(call: &ToolCall, msg: String) -> ToolResult {
@@ -520,7 +553,7 @@ impl ToolExecutor for CompositeTools<'_> {
     }
 }
 
-/// 跑一轮对话；工具面 = SynthV 桥六工具(bridge 非 NULL 时) + pi-audio 工具(配置了 audio 时)。
+/// 跑一轮对话；工具面 = SynthV 桥六工具(bridge 非 NULL 时) + 已配置/就绪的本地组件工具。
 /// 返回本轮新增消息 JSON 数组；出错返回 `{"error":…}`。调用方需 `pi_string_free`。
 ///
 /// # Safety
@@ -543,6 +576,7 @@ pub unsafe extern "C" fn pi_agent_send_with_bridge(
     let audio_tools = audio_cfg.as_ref().map(|cfg| AudioTools { cfg });
     let cvrs_cfg = agent.cvrs.clone();
     let cvrs_tools = cvrs_cfg.as_ref().map(|cfg| CvrsTools { cfg });
+    let ffmpeg_tools = FfmpegTools::if_ready(component_ffi::ffmpeg_config());
     let mut parts: Vec<&dyn ToolExecutor> = Vec::new();
     if let Some(b) = bridge_tools.as_ref() {
         parts.push(b);
@@ -553,14 +587,15 @@ pub unsafe extern "C" fn pi_agent_send_with_bridge(
     if let Some(c) = cvrs_tools.as_ref() {
         parts.push(c);
     }
+    if let Some(f) = ffmpeg_tools.as_ref() {
+        parts.push(f);
+    }
 
     let result = if parts.is_empty() {
-        AgentLoop::new(agent.provider.as_ref(), &NoTools)
-            .run_turn(&mut agent.conversation, input)
+        AgentLoop::new(agent.provider.as_ref(), &NoTools).run_turn(&mut agent.conversation, input)
     } else {
         let composite = CompositeTools { parts };
-        AgentLoop::new(agent.provider.as_ref(), &composite)
-            .run_turn(&mut agent.conversation, input)
+        AgentLoop::new(agent.provider.as_ref(), &composite).run_turn(&mut agent.conversation, input)
     };
     match result {
         Ok(added) => match serde_json::to_string(&added) {

@@ -73,8 +73,14 @@ impl McpStdioClient {
         }
 
         let mut child = cmd.spawn()?;
-        let stdin = child.stdin.take().ok_or_else(|| McpError("无 stdin".into()))?;
-        let stdout = child.stdout.take().ok_or_else(|| McpError("无 stdout".into()))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| McpError("无 stdin".into()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| McpError("无 stdout".into()))?;
 
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let read_pending = pending.clone();
@@ -121,7 +127,8 @@ impl McpStdioClient {
         let msg = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         self.write_line(&msg).await?;
 
-        rx.await.map_err(|_| McpError("响应通道关闭（子进程可能已退出）".into()))?
+        rx.await
+            .map_err(|_| McpError("响应通道关闭（子进程可能已退出）".into()))?
     }
 
     async fn notify(&self, method: &str, params: Value) -> std::result::Result<(), McpError> {
@@ -169,8 +176,11 @@ impl McpStdioClient {
         name: &str,
         arguments: Value,
     ) -> std::result::Result<Value, McpError> {
-        self.request("tools/call", json!({ "name": name, "arguments": arguments }))
-            .await
+        self.request(
+            "tools/call",
+            json!({ "name": name, "arguments": arguments }),
+        )
+        .await
     }
 }
 

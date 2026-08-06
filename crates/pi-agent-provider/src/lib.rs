@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use pi_agent_core::{
-    AgentProvider, AgentStep, ChatMessage, PiError, Result, Role, ToolCall, ToolDefinition,
+    AgentProvider, AgentStep, ChatMessage, FfmpegConfig, PiError, Result, Role, ToolCall,
+    ToolDefinition,
 };
 
 /// Anthropic provider 配置。
@@ -74,7 +75,11 @@ impl AnthropicProvider {
     /// 规则：System 角色并入 system 提示；Assistant 的 tool_calls 转 `tool_use` 块；
     /// 连续的 Tool 结果合并进**同一条** user 消息的 `tool_result` 块（API 要求
     /// 并行工具的结果必须在紧随其后的单条 user 消息里）。
-    fn build_request(&self, conversation: &[ChatMessage], tools: &[ToolDefinition]) -> Result<Value> {
+    fn build_request(
+        &self,
+        conversation: &[ChatMessage],
+        tools: &[ToolDefinition],
+    ) -> Result<Value> {
         let mut system_parts: Vec<String> = self.config.system.iter().cloned().collect();
         let mut messages: Vec<Value> = Vec::new();
 
@@ -235,9 +240,10 @@ impl AgentProvider for AnthropicProvider {
             req = req.set("x-api-key", &self.config.auth_token);
         } else {
             // 中继 token：双发两种头，兼容 x-api-key 或 Bearer 任一实现。
-            req = req
-                .set("x-api-key", &self.config.auth_token)
-                .set("authorization", &format!("Bearer {}", self.config.auth_token));
+            req = req.set("x-api-key", &self.config.auth_token).set(
+                "authorization",
+                &format!("Bearer {}", self.config.auth_token),
+            );
         }
 
         let response = req.send_string(&request.to_string());
@@ -287,6 +293,9 @@ pub struct PiConfig {
     /// cvrs 组件（配置后 agent 获得 cvrs_probe / cvrs_add_ref 工具）。
     #[serde(default)]
     pub cvrs: Option<PythonToolConfig>,
+    /// FFmpeg discovery preference. Lifecycle operations remain explicit UI actions.
+    #[serde(default)]
+    pub ffmpeg: FfmpegConfig,
 }
 
 fn default_provider() -> String {
@@ -355,13 +364,31 @@ mod tests {
                 role: Role::Assistant,
                 content: "calling".into(),
                 tool_calls: vec![
-                    ToolCall { id: "a".into(), tool_name: "t1".into(), arguments_json: "{}".into() },
-                    ToolCall { id: "b".into(), tool_name: "t2".into(), arguments_json: "{}".into() },
+                    ToolCall {
+                        id: "a".into(),
+                        tool_name: "t1".into(),
+                        arguments_json: "{}".into(),
+                    },
+                    ToolCall {
+                        id: "b".into(),
+                        tool_name: "t2".into(),
+                        arguments_json: "{}".into(),
+                    },
                 ],
                 tool_call_id: None,
             },
-            ChatMessage { role: Role::Tool, content: "r1".into(), tool_calls: vec![], tool_call_id: Some("a".into()) },
-            ChatMessage { role: Role::Tool, content: "r2".into(), tool_calls: vec![], tool_call_id: Some("b".into()) },
+            ChatMessage {
+                role: Role::Tool,
+                content: "r1".into(),
+                tool_calls: vec![],
+                tool_call_id: Some("a".into()),
+            },
+            ChatMessage {
+                role: Role::Tool,
+                content: "r2".into(),
+                tool_calls: vec![],
+                tool_call_id: Some("b".into()),
+            },
         ];
         let req = p.build_request(&convo, &[]).unwrap();
         let messages = req["messages"].as_array().unwrap();

@@ -54,14 +54,209 @@ pub struct ComponentSpec {
 }
 
 /// 组件安装状态。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ComponentState {
-    NotInstalled,
+    Checking,
     Downloading,
+    Verifying,
     Installing,
+    Updating,
+    Uninstalling,
     Ready,
+    Cancelled,
     Failed,
+    #[default]
+    NotInstalled,
+}
+
+/// Where an executable was resolved from.  Managed means the private Pi
+/// installation; system and explicit remain read-only from Pi's perspective.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ComponentSource {
+    Managed,
+    System,
+    Explicit,
+    #[default]
+    Unavailable,
+}
+
+/// User-initiated lifecycle operations for an installable component.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ComponentAction {
+    Install,
+    Update,
+    Uninstall,
+}
+
+/// Runtime state returned to the Desktop UI and any host integration.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComponentStatus {
+    pub id: String,
+    #[serde(default)]
+    pub state: ComponentState,
+    #[serde(default)]
+    pub source: ComponentSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable_dir: Option<String>,
+    #[serde(default)]
+    pub can_install: bool,
+    #[serde(default)]
+    pub can_update: bool,
+    #[serde(default)]
+    pub can_uninstall: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Static catalog information paired with its current runtime state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComponentView {
+    pub spec: ComponentSpec,
+    pub status: ComponentStatus,
+}
+
+/// A background lifecycle or FFmpeg operation state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum JobState {
+    #[default]
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+/// A stable structured job failure.  Callers should branch on `code`, not a
+/// rendered process message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobError {
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
+}
+
+/// Pollable task status. Progress is normalized to the inclusive 0.0–1.0
+/// range by the executor.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct JobStatus {
+    pub id: String,
+    #[serde(default)]
+    pub state: JobState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<JobError>,
+}
+
+/// Resolution policy for FFmpeg. `Auto` uses an explicit directory first,
+/// then a healthy managed installation, and finally the system PATH.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FfmpegSourcePreference {
+    #[default]
+    Auto,
+    Managed,
+    System,
+}
+
+/// User-level FFmpeg discovery preferences.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FfmpegConfig {
+    #[serde(default)]
+    pub preference: FfmpegSourcePreference,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_bin_dir: Option<String>,
+}
+
+/// The finite audio operations exposed by Pi. This deliberately cannot encode
+/// an arbitrary FFmpeg command line or filter graph.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FfmpegRequest {
+    Probe {
+        input: String,
+    },
+    Prepare {
+        input: String,
+        output_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sample_rate: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        channels: Option<u8>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sample_format: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start_seconds: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_seconds: Option<f64>,
+    },
+    LoudnessAnalyze {
+        input: String,
+    },
+    LoudnessNormalize {
+        input: String,
+        output_name: String,
+        target_lufs: f64,
+        max_true_peak_db: f64,
+        target_lra: f64,
+    },
+}
+
+/// Normalized facts from `ffprobe` for the first selected audio stream.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FfmpegProbeResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channels: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bit_depth: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bit_rate: Option<u64>,
+}
+
+/// Measurements emitted by an EBU R128 loudness analysis.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LoudnessAnalysisResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integrated_lufs: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub true_peak_db: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loudness_range: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<f64>,
+}
+
+/// Result of an FFmpeg operation. Output paths are strings so the C ABI and
+/// JSON clients receive the same platform-native representation.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FfmpegOperationResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe: Option<FfmpegProbeResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loudness: Option<LoudnessAnalysisResult>,
 }
 
 /// Sound→MIDI 请求。
@@ -96,7 +291,13 @@ pub struct AudioAnalysis {
 
 /// 内置组件目录。桌面「组件」页面与 AI 工具列表都从这里读。
 pub fn default_catalog() -> Vec<ComponentSpec> {
-    fn spec(id: &str, kind: ComponentKind, name: &str, desc: &str, audience: Audience) -> ComponentSpec {
+    fn spec(
+        id: &str,
+        kind: ComponentKind,
+        name: &str,
+        desc: &str,
+        audience: Audience,
+    ) -> ComponentSpec {
         ComponentSpec {
             id: id.to_string(),
             kind,
@@ -131,8 +332,122 @@ pub fn default_catalog() -> Vec<ComponentSpec> {
               pair-diff(有词/无词配对差分→单音人声轨，可直喂 SV import)。风格命名留给上层 LLM。",
              Audience::Both),
         spec("cvrs", ComponentKind::Cvrs, "CVRS 跨版本渲染搬运",
-             "本仓库 components/cvrs：.svp 文件级、只写不读的 SV1↔SV2 桥。probe(版本/时代/轨探针) 与 \
-              add-ref(把 wav 写成静音参考音频轨，schema 克隆自目标以保证兼容)。渲染步不含，wav 由调用方给。",
+             "本仓库 components/cvrs：.svp 文件级 SV1↔SV2 辅助工具。probe 读取版本/时代/轨信息；\
+              add-ref 读取并克隆目标 schema 后写出新文件，不覆盖源工程。渲染步不含，wav 由调用方给。",
              Audience::Both),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn component_state_keeps_existing_wire_names_and_serializes_new_states() {
+        assert_eq!(
+            serde_json::to_string(&ComponentState::NotInstalled).unwrap(),
+            "\"not-installed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ComponentState::Downloading).unwrap(),
+            "\"downloading\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ComponentState::Ready).unwrap(),
+            "\"ready\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ComponentState::Checking).unwrap(),
+            "\"checking\""
+        );
+        assert_eq!(ComponentState::default(), ComponentState::NotInstalled);
+    }
+
+    #[test]
+    fn component_status_defaults_to_unavailable_not_installed() {
+        let status: ComponentStatus = serde_json::from_str(r#"{"id":"ffmpeg"}"#).unwrap();
+        assert_eq!(status.id, "ffmpeg");
+        assert_eq!(status.state, ComponentState::NotInstalled);
+        assert_eq!(status.source, ComponentSource::Unavailable);
+        assert!(!status.can_install);
+    }
+
+    #[test]
+    fn ffmpeg_config_defaults_to_auto() {
+        let config: FfmpegConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(config.preference, FfmpegSourcePreference::Auto);
+        assert_eq!(config.system_bin_dir, None);
+    }
+
+    #[test]
+    fn ffmpeg_request_round_trips_all_whitelisted_operations() {
+        let requests = vec![
+            FfmpegRequest::Probe {
+                input: r"C:\\audio\\in.wav".into(),
+            },
+            FfmpegRequest::Prepare {
+                input: r"C:\\audio\\in.wav".into(),
+                output_name: "prepared.wav".into(),
+                sample_rate: Some(44_100),
+                channels: Some(1),
+                sample_format: Some("s24".into()),
+                start_seconds: Some(1.5),
+                duration_seconds: Some(12.0),
+            },
+            FfmpegRequest::LoudnessAnalyze {
+                input: r"C:\\audio\\in.wav".into(),
+            },
+            FfmpegRequest::LoudnessNormalize {
+                input: r"C:\\audio\\in.wav".into(),
+                output_name: "normalized.wav".into(),
+                target_lufs: -14.0,
+                max_true_peak_db: -1.0,
+                target_lra: 11.0,
+            },
+        ];
+
+        for request in requests {
+            let json = serde_json::to_string(&request).unwrap();
+            let restored: FfmpegRequest = serde_json::from_str(&json).unwrap();
+            assert_eq!(restored, request);
+        }
+    }
+
+    #[test]
+    fn normalize_requires_all_explicit_targets() {
+        let error = serde_json::from_str::<FfmpegRequest>(
+            r#"{"operation":"loudness_normalize","input":"C:\\audio\\in.wav","output_name":"out.wav"}"#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("target_lufs"));
+    }
+
+    #[test]
+    fn ffmpeg_requests_reject_arbitrary_extra_arguments() {
+        let error = serde_json::from_str::<FfmpegRequest>(
+            r#"{"operation":"probe","input":"C:\\audio\\in.wav","arguments":"-y"}"#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn job_status_round_trips_structured_error() {
+        let status = JobStatus {
+            id: "job-1".into(),
+            state: JobState::Failed,
+            phase: Some("verifying".into()),
+            progress: Some(0.75),
+            result: None,
+            error: Some(JobError {
+                code: "SHA256_MISMATCH".into(),
+                message: "Downloaded archive did not match the manifest.".into(),
+                details: Some("expected=abc actual=def".into()),
+            }),
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        let restored: JobStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.error.unwrap().code, "SHA256_MISMATCH");
+        assert_eq!(restored.state, JobState::Failed);
+    }
 }

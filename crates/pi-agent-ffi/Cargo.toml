@@ -13,6 +13,7 @@ name = "pi_agent"
 crate-type = ["cdylib"]
 
 [dependencies]
+pi-agent-components = { path = "../pi-agent-components" }
 pi-agent-core = { path = "../pi-agent-core" }
 pi-agent-mcp = { path = "../pi-agent-mcp" }
 pi-agent-provider = { path = "../pi-agent-provider" }

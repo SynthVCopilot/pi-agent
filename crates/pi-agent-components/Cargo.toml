@@ -1,0 +1,15 @@
+[package]
+name = "pi-agent-components"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Safe, managed FFmpeg component backend for Pi Agent"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+ureq.workspace = true
+zip = { version = "8.2", default-features = false, features = ["deflate"] }

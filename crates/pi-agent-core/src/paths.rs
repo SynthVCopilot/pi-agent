@@ -21,9 +21,24 @@ pub fn models_dir() -> PathBuf {
     data_root().join("models")
 }
 
+/// Component installation directory: `~/.SynthVcopilot/components`.
+pub fn components_dir() -> PathBuf {
+    data_root().join("components")
+}
+
+/// Temporary component download directory: `~/.SynthVcopilot/downloads`.
+pub fn downloads_dir() -> PathBuf {
+    data_root().join("downloads")
+}
+
 /// 输出写入目录：`~/.SynthVcopilot/output`。
 pub fn output_dir() -> PathBuf {
     data_root().join("output")
+}
+
+/// FFmpeg generated audio directory: `~/.SynthVcopilot/output/ffmpeg`.
+pub fn ffmpeg_output_dir() -> PathBuf {
+    output_dir().join("ffmpeg")
 }
 
 /// 会话历史目录：`~/.SynthVcopilot/history`。
@@ -50,7 +65,9 @@ pub fn safe_join(root: &Path, relative: &str) -> Result<PathBuf> {
                 return Err(PiError::new(format!("路径含 '..'，禁止穿透: {relative}")))
             }
             Component::RootDir | Component::Prefix(_) => {
-                return Err(PiError::new(format!("禁止绝对路径，只接受根下相对路径: {relative}")))
+                return Err(PiError::new(format!(
+                    "禁止绝对路径，只接受根下相对路径: {relative}"
+                )))
             }
         }
     }
@@ -85,5 +102,13 @@ mod tests {
     fn data_root_under_home() {
         let root = data_root();
         assert!(root.ends_with(".SynthVcopilot"));
+    }
+
+    #[test]
+    fn component_paths_stay_under_unified_data_root() {
+        let root = data_root();
+        assert_eq!(components_dir(), root.join("components"));
+        assert_eq!(downloads_dir(), root.join("downloads"));
+        assert_eq!(ffmpeg_output_dir(), root.join("output").join("ffmpeg"));
     }
 }

@@ -14,9 +14,14 @@ pub use agent::{
     ToolDefinition, ToolExecutor, ToolResult,
 };
 pub use components::{
-    default_catalog, AudioAnalysis, Audience, ComponentKind, ComponentSpec, ComponentState,
-    SoundToMidiRequest,
+    default_catalog, Audience, AudioAnalysis, ComponentAction, ComponentKind, ComponentSource,
+    ComponentSpec, ComponentState, ComponentStatus, ComponentView, FfmpegConfig,
+    FfmpegOperationResult, FfmpegProbeResult, FfmpegRequest, FfmpegSourcePreference, JobError,
+    JobState, JobStatus, LoudnessAnalysisResult, SoundToMidiRequest,
 };
 pub use error::{PiError, Result};
 pub use history::{Conversation, ConversationStore, JsonConversationStore};
-pub use paths::{config_path, data_root, history_dir, models_dir, output_dir, safe_join};
+pub use paths::{
+    components_dir, config_path, data_root, downloads_dir, ffmpeg_output_dir, history_dir,
+    models_dir, output_dir, safe_join,
+};

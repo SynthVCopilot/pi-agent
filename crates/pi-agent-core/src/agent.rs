@@ -25,10 +25,20 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: Role::User, content: content.into(), tool_calls: Vec::new(), tool_call_id: None }
+        Self {
+            role: Role::User,
+            content: content.into(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }
     }
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: Role::Assistant, content: content.into(), tool_calls: Vec::new(), tool_call_id: None }
+        Self {
+            role: Role::Assistant,
+            content: content.into(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }
     }
 }
 
@@ -109,11 +119,19 @@ pub struct AgentLoop<'a> {
 
 impl<'a> AgentLoop<'a> {
     pub fn new(provider: &'a dyn AgentProvider, executor: &'a dyn ToolExecutor) -> Self {
-        Self { provider, executor, max_tool_iterations: 24 }
+        Self {
+            provider,
+            executor,
+            max_tool_iterations: 24,
+        }
     }
 
     /// 跑一整轮：追加用户消息，循环处理工具，返回本轮新增的全部消息。
-    pub fn run_turn(&self, conversation: &mut Vec<ChatMessage>, user_input: &str) -> Result<Vec<ChatMessage>> {
+    pub fn run_turn(
+        &self,
+        conversation: &mut Vec<ChatMessage>,
+        user_input: &str,
+    ) -> Result<Vec<ChatMessage>> {
         let mut added = Vec::new();
         let user_msg = ChatMessage::user(user_input);
         conversation.push(user_msg.clone());
@@ -122,7 +140,8 @@ impl<'a> AgentLoop<'a> {
         for _ in 0..self.max_tool_iterations {
             let step = self.provider.step(conversation, &self.executor.tools())?;
 
-            let mut assistant = ChatMessage::assistant(step.assistant_text.clone().unwrap_or_default());
+            let mut assistant =
+                ChatMessage::assistant(step.assistant_text.clone().unwrap_or_default());
             if step.wants_tools() {
                 assistant.tool_calls = step.tool_calls.clone();
             }
@@ -162,6 +181,9 @@ impl AgentProvider for EchoProvider {
             Some(m) => format!("（占位后端）收到：{}", m.content),
             None => "（占位后端）你好，我是 Pi Agent（v3）的占位回显后端。".to_string(),
         };
-        Ok(AgentStep { assistant_text: Some(text), tool_calls: Vec::new() })
+        Ok(AgentStep {
+            assistant_text: Some(text),
+            tool_calls: Vec::new(),
+        })
     }
 }

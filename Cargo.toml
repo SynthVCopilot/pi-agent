@@ -9,6 +9,7 @@
 resolver = "2"
 members = [
     "crates/pi-agent-core",
+    "crates/pi-agent-components",
     "crates/pi-agent-mcp",
     "crates/pi-agent-provider",
     "crates/pi-agent-ffi",

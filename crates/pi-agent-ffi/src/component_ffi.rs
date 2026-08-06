@@ -652,7 +652,8 @@ pub unsafe extern "C" fn pi_job_destroy(job: *mut PiJob) {
     }
 }
 
-/// Agent-visible processing tools. Lifecycle mutation is intentionally absent.
+/// Agent-visible, read-only FFmpeg tools. Audio-file creation remains a
+/// Desktop-owned action so the user can review and confirm it in the UI.
 pub(crate) struct FfmpegTools {
     config: FfmpegConfig,
 }
@@ -683,19 +684,9 @@ impl ToolExecutor for FfmpegTools {
                 input_schema_json: r#"{"type":"object","additionalProperties":false,"properties":{"input":{"type":"string"}},"required":["input"]}"#.into(),
             },
             ToolDefinition {
-                name: "ffmpeg_prepare_audio".into(),
-                description: "Create a new contained WAV with optional trim, sample rate, mono/stereo, and s16/s24/f32 PCM conversion.".into(),
-                input_schema_json: r#"{"type":"object","additionalProperties":false,"properties":{"input":{"type":"string"},"output_name":{"type":"string"},"sample_rate":{"type":"integer","minimum":8000,"maximum":192000},"channels":{"type":"integer","minimum":1,"maximum":2},"sample_format":{"type":"string","enum":["s16","s24","f32"]},"start_seconds":{"type":"number","minimum":0},"duration_seconds":{"type":"number","exclusiveMinimum":0}},"required":["input","output_name"]}"#.into(),
-            },
-            ToolDefinition {
                 name: "ffmpeg_loudness_analyze".into(),
                 description: "Measure EBU R128 integrated loudness, true peak, loudness range, and threshold for a local file.".into(),
                 input_schema_json: r#"{"type":"object","additionalProperties":false,"properties":{"input":{"type":"string"}},"required":["input"]}"#.into(),
-            },
-            ToolDefinition {
-                name: "ffmpeg_loudness_normalize".into(),
-                description: "Create a two-pass EBU R128 normalized WAV; all loudness targets must be explicit.".into(),
-                input_schema_json: r#"{"type":"object","additionalProperties":false,"properties":{"input":{"type":"string"},"output_name":{"type":"string"},"target_lufs":{"type":"number","minimum":-70,"maximum":-5},"max_true_peak_db":{"type":"number","minimum":-9,"maximum":0},"target_lra":{"type":"number","minimum":1,"maximum":50}},"required":["input","output_name","target_lufs","max_true_peak_db","target_lra"]}"#.into(),
             },
         ]
     }
@@ -707,9 +698,7 @@ impl ToolExecutor for FfmpegTools {
         };
         let operation = match call.tool_name.as_str() {
             "ffmpeg_probe" => "probe",
-            "ffmpeg_prepare_audio" => "prepare",
             "ffmpeg_loudness_analyze" => "loudness_analyze",
-            "ffmpeg_loudness_normalize" => "loudness_normalize",
             other => return Ok(tool_error(call, format!("unknown FFmpeg tool {other}"))),
         };
         let Some(object) = args.as_object_mut() else {
@@ -836,25 +825,25 @@ mod tests {
     }
 
     #[test]
-    fn agent_arguments_reject_wrong_optional_types_before_execution() {
+    fn agent_rejects_audio_creation_tools_before_execution() {
         let tools = FfmpegTools {
             config: FfmpegConfig::default(),
         };
-        let result = tools
-            .execute(&ToolCall {
-                id: "call-1".into(),
-                tool_name: "ffmpeg_prepare_audio".into(),
-                arguments_json:
-                    r#"{"input":"C:\\audio.wav","output_name":"out.wav","sample_rate":"44100"}"#
-                        .into(),
-            })
-            .unwrap();
-        assert!(result.is_error);
-        assert!(result.result_json.contains("invalid arguments"));
+        for tool_name in ["ffmpeg_prepare_audio", "ffmpeg_loudness_normalize"] {
+            let result = tools
+                .execute(&ToolCall {
+                    id: "call-1".into(),
+                    tool_name: tool_name.into(),
+                    arguments_json: r#"{"input":"C:\\audio.wav","output_name":"out.wav"}"#.into(),
+                })
+                .unwrap();
+            assert!(result.is_error);
+            assert!(result.result_json.contains("unknown FFmpeg tool"));
+        }
     }
 
     #[test]
-    fn agent_surface_contains_processing_only() {
+    fn agent_surface_contains_read_only_tools_only() {
         let tools = FfmpegTools {
             config: FfmpegConfig::default(),
         };
@@ -863,14 +852,6 @@ mod tests {
             .into_iter()
             .map(|tool| tool.name)
             .collect::<Vec<_>>();
-        assert_eq!(
-            names,
-            [
-                "ffmpeg_probe",
-                "ffmpeg_prepare_audio",
-                "ffmpeg_loudness_analyze",
-                "ffmpeg_loudness_normalize",
-            ]
-        );
+        assert_eq!(names, ["ffmpeg_probe", "ffmpeg_loudness_analyze"]);
     }
 }

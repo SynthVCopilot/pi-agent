@@ -7,7 +7,7 @@
       （乐器构成、genre 倾向、有词/无词判别）。输出紧凑 JSON（stdout）。
       风格命名刻意留给上层 LLM：本工具只出结构化事实，不下审美结论。
 
-  pair-diff <vocal> <inst> [--midi OUT.mid] [--tol 0.08]
+  pair-diff <vocal> <inst> [--midi OUT.mid] [--tol 0.08] [--advanced]
       有词/无词配对差分：按 (pitch, start±tol) 消耗式匹配去除伴奏音符，
       残差=人声贡献；经"最高音抢占"单音化后可直接喂
       synthv-agent-bridge 的 import_monophonic_score（≤512 音符时）。
@@ -290,12 +290,129 @@ def monophony_rate(ns):
     return ok / (len(ns) - 1)
 
 
+def automatic_correct(notes):
+    """Conservative melody cleanup used by the AI-mode advanced workflow.
+
+    It corrects isolated octave slips only when the alternative is materially closer to
+    the surrounding melody, joins near-contiguous repeated notes, and removes overlap
+    fragments introduced by the correction. Every mutation is counted for review.
+    """
+    corrected = [dict(note) for note in sorted(notes, key=lambda note: note["start"])]
+    octave_shifts = 0
+    for index in range(1, len(corrected)):
+        previous = corrected[index - 1]["pitch"]
+        current = corrected[index]["pitch"]
+        candidates = [current]
+        if current - 12 >= 48:
+            candidates.append(current - 12)
+        if current + 12 <= 84:
+            candidates.append(current + 12)
+        best = min(candidates, key=lambda pitch: abs(pitch - previous))
+        if best != current and abs(current - previous) - abs(best - previous) >= 7:
+            corrected[index]["pitch"] = best
+            octave_shifts += 1
+
+    joined = []
+    joined_notes = 0
+    for note in corrected:
+        if joined and note["pitch"] == joined[-1]["pitch"] and note["start"] - joined[-1]["end"] <= 0.10:
+            joined[-1]["end"] = max(joined[-1]["end"], note["end"])
+            joined[-1]["velocity"] = max(joined[-1].get("velocity", 90), note.get("velocity", 90))
+            joined_notes += 1
+        else:
+            joined.append(note)
+
+    cleaned = []
+    overlap_trims = 0
+    dropped_fragments = 0
+    for index, note in enumerate(joined):
+        if index + 1 < len(joined) and note["end"] > joined[index + 1]["start"]:
+            note["end"] = max(note["start"], joined[index + 1]["start"])
+            overlap_trims += 1
+        if note["end"] - note["start"] < 0.06:
+            dropped_fragments += 1
+            continue
+        cleaned.append(note)
+    return cleaned, {
+        "octave_shifts": octave_shifts,
+        "joined_repeats": joined_notes,
+        "overlap_trims": overlap_trims,
+        "dropped_fragments": dropped_fragments,
+    }
+
+
+def advanced_pair_diff(vnotes, inotes, requested_tol):
+    tolerances = sorted({round(max(0.02, min(0.25, requested_tol + delta)), 3)
+                         for delta in (-0.04, -0.02, 0.0, 0.02, 0.04)})
+    trials = []
+    for tolerance in tolerances:
+        residual, matched = diff_notes(vnotes, inotes, tolerance)
+        in_range = [note for note in residual if 48 <= note["pitch"] <= 84]
+        collapsed = mono_collapse(in_range)
+        corrected, corrections = automatic_correct(collapsed)
+        match_rate = matched / max(1, len(vnotes))
+        coverage = min(1.0, len(corrected) / max(12.0, len(vnotes) * 0.35))
+        separation = max(0.0, 1.0 - abs(match_rate - 0.55) / 0.55)
+        correction_ratio = sum(corrections.values()) / max(1, len(collapsed))
+        score = 0.48 * coverage + 0.32 * separation + 0.20 * max(0.0, 1.0 - correction_ratio)
+        trials.append({
+            "tolerance": tolerance,
+            "score": score,
+            "residual": residual,
+            "matched": matched,
+            "in_range": in_range,
+            "mono": corrected,
+            "corrections": corrections,
+        })
+
+    counts = [len(trial["mono"]) for trial in trials]
+    stability = 1.0 - ((max(counts) - min(counts)) / max(1, max(counts)))
+    for trial in trials:
+        trial["score"] = 0.82 * trial["score"] + 0.18 * stability
+    selected = max(trials, key=lambda trial: (trial["score"], -abs(trial["tolerance"] - requested_tol)))
+    confidence = max(0.0, min(1.0, selected["score"]))
+    level = "high" if confidence >= 0.78 else ("medium" if confidence >= 0.55 else "low")
+    public_trials = [{
+        "tolerance": trial["tolerance"],
+        "mono_notes": len(trial["mono"]),
+        "match_rate": round(trial["matched"] / max(1, len(vnotes)), 3),
+        "score": round(trial["score"], 3),
+    } for trial in trials]
+    return selected, {
+        "score": round(confidence, 3),
+        "level": level,
+        "tolerance_stability": round(stability, 3),
+        "checks": {
+            "has_output": bool(selected["mono"]),
+            "within_sv_import_limit": len(selected["mono"]) <= 512,
+            "correction_ratio": round(min(1.0, sum(selected["corrections"].values()) / max(1, len(selected["mono"]))), 3),
+        },
+    }, public_trials
+
+
 def cmd_pair_diff(args) -> dict:
     vnotes = extract_notes(args.vocal)
     inotes = extract_notes(args.inst)
-    residual, matched = diff_notes(vnotes, inotes, args.tol)
-    in_range = [n for n in residual if 48 <= n["pitch"] <= 84]  # C3–C6
-    mono = mono_collapse(in_range)
+    advanced = None
+    if args.advanced:
+        selected, confidence, trials = advanced_pair_diff(vnotes, inotes, args.tol)
+        residual = selected["residual"]
+        matched = selected["matched"]
+        in_range = selected["in_range"]
+        mono = selected["mono"]
+        selected_tolerance = selected["tolerance"]
+        advanced = {
+            "requested_tolerance": args.tol,
+            "selected_tolerance": selected_tolerance,
+            "automatic_corrections": selected["corrections"],
+            "confidence": confidence,
+            "parameter_trials": trials,
+        }
+    else:
+        residual, matched = diff_notes(vnotes, inotes, args.tol)
+        in_range = [n for n in residual if 48 <= n["pitch"] <= 84]  # C3–C6
+        mono = mono_collapse(in_range)
+        selected_tolerance = args.tol
 
     result = {
         "tool": "pi-audio/pair-diff",
@@ -305,6 +422,7 @@ def cmd_pair_diff(args) -> dict:
         "inst_notes": len(inotes),
         "matched_to_inst": matched,
         "match_rate": round(matched / max(1, len(vnotes)), 2),
+        "selected_tolerance": selected_tolerance,
         "residual": len(residual),
         "residual_in_C3_C6": len(in_range),
         "mono_notes": len(mono),
@@ -312,6 +430,8 @@ def cmd_pair_diff(args) -> dict:
         "sv_importable_whole": len(mono) <= 512,  # import_monophonic_score 上限
         "note": "残差含和声/混音差异；单音化保留最高声部，低声部和声会被丢弃",
     }
+    if advanced is not None:
+        result["advanced"] = advanced
     if mono:
         ps = [n["pitch"] for n in mono]
         result["mono_range"] = f"{note_name(min(ps))}-{note_name(max(ps))}"
@@ -354,6 +474,7 @@ def main():
     d.add_argument("inst")
     d.add_argument("--midi", help="导出单音化 MIDI 路径")
     d.add_argument("--tol", type=float, default=0.08, help="起始时间匹配容差秒 (默认 0.08)")
+    d.add_argument("--advanced", action="store_true", help="多容差寻优、保守自动纠正与置信度检查")
     d.set_defaults(fn=cmd_pair_diff)
 
     args = ap.parse_args()

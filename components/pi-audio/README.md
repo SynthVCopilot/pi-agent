@@ -34,6 +34,12 @@ PANNs 乐器构成(可靠) + 特征指纹(BPM/打击比/密度/音区/能量弧)
 python pi_audio.py pair-diff vocal.flac inst.flac --midi vocal-mono.mid
 ```
 
+高级模式会围绕请求容差运行五组候选参数，选择评分最高的结果，并执行保守的八度偏移修正、重复音符合并和重叠碎片清理。JSON 会同时返回候选评分、实际容差、修正计数和置信度：
+
+```bash
+python pi_audio.py pair-diff vocal.flac inst.flac --midi vocal-mono.mid --tol 0.08 --advanced
+```
+
 原理:按 `(pitch, start±80ms)` 消耗式匹配去除伴奏音符,残差即人声贡献;
 再经"最高音抢占"单音化 → 100% 单音,通常 ≤512 音符,
 **可直接喂 synthv-agent-bridge 的 `import_monophonic_score`,绕开 demucs**。

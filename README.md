@@ -34,6 +34,10 @@ audio preparation and loudness operations, plus user-triggered install, update,
 and uninstall lifecycle jobs. It does not change the global `PATH`, execute
 caller-supplied FFmpeg arguments, or accept remote input URLs.
 
+The Agent can only probe files and analyze loudness. Creating prepared or
+normalized WAV files is reserved for `pi-desktop` through the C ABI, where the
+user reviews the operation and confirms the write.
+
 See [the FFmpeg component contract](docs/ffmpeg-component.md) for the C-ABI,
 job JSON, release manifest, safety rules, licensing, and the hand-off contract
 for `pi-desktop`.

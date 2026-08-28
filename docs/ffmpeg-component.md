@@ -161,6 +161,14 @@ managed-then-PATH resolution in `auto` mode.
 {"operation":"loudness_normalize","input":"C:\\audio\\take.wav","output_name":"take-normalized.wav","target_lufs":-16,"max_true_peak_db":-1.5,"target_lra":11}
 ```
 
+## Agent permission boundary
+
+The Agent-visible tool surface is deliberately read-only: it exposes only
+`ffmpeg_probe` and `ffmpeg_loudness_analyze`. `prepare` and
+`loudness_normalize` remain available through `pi_ffmpeg_job_start` for
+`pi-desktop`, which must show the operation to the user and obtain their
+confirmation before it starts a job that writes a WAV file.
+
 `pi_job_status_json` returns a stable envelope. `progress` ranges from `0` to
 `1`; it is `1` on success. `phase` reports the active lifecycle or processing
 phase, and `error` is a structured object with `code`, `message`, and optional
